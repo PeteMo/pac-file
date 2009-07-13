@@ -1,0 +1,111 @@
+#!/bin/bash
+
+#-----------------------------------------------------------
+# A utility for discovering which ArchLinux package contains 
+# a given file. Downloads filelists for all active repos in
+# pacman.conf; uses mirrors in order according to pacman's
+# mirrorlist file.
+#
+# Peter Morris 2008
+#-----------------------------------------------------------
+
+db=/var/lib/pacman/filelists
+pacmanconf=/etc/pacman.conf
+mirrorlist=/etc/pacman.d/mirrorlist
+
+# Print usage message.
+function usage() {
+    echo "usage: $(basename $0) [options] <pattern>"
+    echo 
+    echo "Search package filelists for <pattern>."
+    echo "options:"
+    echo "  $(basename $0) [-h --help]      Print this help message."
+    echo "  $(basename $0) [-S --sync]      Syncronize package filelists."
+}
+
+# Print active repos in $pacmanconf.
+function list_repos() {
+    sed -n '/REPOSITORIES/,$ s/^\[\(.*\)\]/\1/p' $pacmanconf
+}
+
+# Print active mirrors in $mirrorlist.
+function list_mirrors() {
+    sed -n 's/^Server = \(.*\)$/\1/p' $mirrorlist
+}
+
+# Download the filelist for repo $1. Assumes $mirrors
+# is an array of urls to check for $file.
+function download() {
+    repo=$1
+    file="${repo}.files.tar.gz"
+
+    i=0
+    while [[ ! -e "${db}/${file}" ]]; do
+        if (( $i >= ${#mirrors[@]} )); then
+            return 1
+        fi
+
+        url=$(echo "${mirrors[$i]}" | sed "s/\$repo/$repo/g")
+        wget --connect-timeout=15 -P "$db" "${url}/${file}"
+        let i+=1
+    done
+}
+
+# Decompress $1 into dir $2.
+function decompress() {
+    file=$1
+    repo=$2
+
+    mkdir "${db}/${repo}"
+    tar -xzf "${db}/${file}" -C "${db}/${repo}"
+    rm -f "${db}/${file}"
+}
+
+# Download the filelist for each active repo in 
+# pacman.conf. Try mirrors in order until successful.
+function sync() {
+    mirrors=($(list_mirrors))
+    for repo in $(list_repos); do
+        echo "Fetching filelist for $repo"
+        download "$repo"
+        if [[ $? == 0 ]]; then
+            decompress "$file" "$repo"
+        else
+            echo
+            echo "Error: unable to retrieve $file from any mirror."; echo
+        fi
+    done
+}
+
+# Start of `main'.
+case "$1" in
+    -S|--sync)
+        if [[ $EUID != 0 ]]; then
+            echo "error: you cannot perform this operation unless you are root."
+            exit 1;
+        fi    
+
+        echo "Syncronizing ${db}..."; echo
+        rm -rf "$db" && mkdir -p "$db"
+        sync
+    ;;
+
+    -h|--help)
+        usage
+    ;;
+    *)
+        if [[ $# < 1 ]]; then
+            echo "not enough parameters"; echo
+            usage
+            exit 1
+        fi
+
+        if [[ ! -d "$db" ]]; then
+            echo "File database \"$db\" does not exist!"
+            echo "Have you synchronized the database?"; echo
+            exit 1
+        fi
+
+        grep -rE "$@" "$db" | sed  "s|$db/\(.*\)/files:|\1 |g"
+    ;;
+esac
